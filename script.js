@@ -1,25 +1,54 @@
+/* ──────────────────────────────────────────────
+   TRUSSCALC — app.js
+   ────────────────────────────────────────────── */
+
+// ═══════════════════════════════════════════════════════════════════
+// CANVAS COLOR CONSTANTS  (CSS vars não funcionam no canvas 2D)
+// ═══════════════════════════════════════════════════════════════════
+const CLR = {
+  bg:       '#060d1a',
+  panel:    '#0b1728',
+  border:   '#1a3355',
+  accent:   '#00cfff',
+  accent2:  '#0088cc',
+  tension:  '#00e676',
+  compress: '#ff4545',
+  zero:     '#78909c',
+  force:    '#ffd740',
+  support:  '#ff9800',
+  warn:     '#ff5252',
+  muted:    '#4d7fa8',
+  white:    '#e8f4ff',
+  grid:     '#112240',
+  axis:     '#1a4a80',
+  nodeBg:   '#0d2035',
+  nodeSel:  '#00cfff',
+  nodeErr:  '#ff5252',
+  text:     '#cce8f4',
+};
+
 // ═══════════════════════════════════════════════════════════════════
 // STATE
 // ═══════════════════════════════════════════════════════════════════
 const S = {
   nodes:    [],   // {id, x, y}
-  members:  [],   // {id, a, b}  (node indices)
+  members:  [],   // {id, a, b}
   supports: [],   // {id, node, type: 'pin'|'roller_h'|'roller_v'}
   forces:   [],   // {id, node, fx, fy}
 
-  mode:           'node',
-  pendingMember:  null,   // first node selected for member
-  supportType:    'pin',
-  results:        null,
-  crossings:      [],
+  mode:          'node',
+  pendingMember: null,
+  supportType:   'pin',
+  results:       null,
+  crossings:     [],
 
-  // canvas view
-  originX: 0, originY: 0,  // world coords at canvas center
-  scale:   70,              // px per unit
+  originX: 0, originY: 0,
+  scale: 70,
   panning: false,
   panSX: 0, panSY: 0, panOX: 0, panOY: 0,
   snapGrid: true,
   idCounter: 0,
+  _mouseCanvas: null,
 };
 
 function nextId() { return ++S.idCounter; }
@@ -31,23 +60,21 @@ const canvas = document.getElementById('canvas');
 const ctx = canvas.getContext('2d');
 
 function worldToCanvas(wx, wy) {
-  const cx = (wx - S.originX) * S.scale + canvas.width  / 2;
-  const cy = -(wy - S.originY) * S.scale + canvas.height / 2;
-  return [cx, cy];
+  return [
+    (wx - S.originX) * S.scale + canvas.width  / 2,
+   -((wy - S.originY) * S.scale) + canvas.height / 2
+  ];
 }
-
 function canvasToWorld(cx, cy) {
-  const wx = (cx - canvas.width  / 2) / S.scale + S.originX;
-  const wy = -((cy - canvas.height / 2) / S.scale) + S.originY;
-  return [wx, wy];
+  return [
+    (cx - canvas.width  / 2) / S.scale + S.originX,
+   -((cy - canvas.height / 2) / S.scale) + S.originY
+  ];
 }
-
 function snapToGrid(wx, wy) {
   if (!S.snapGrid) return [wx, wy];
-  const step = 1;
-  return [Math.round(wx / step) * step, Math.round(wy / step) * step];
+  return [Math.round(wx), Math.round(wy)];
 }
-
 function resizeCanvas() {
   const wrapper = document.getElementById('canvas-wrapper');
   canvas.width  = wrapper.clientWidth;
@@ -59,10 +86,8 @@ function resizeCanvas() {
 // RENDER
 // ═══════════════════════════════════════════════════════════════════
 function render() {
-  const W = canvas.width, H = canvas.height;
-  ctx.clearRect(0, 0, W, H);
-
-  drawGrid(W, H);
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  drawGrid();
   drawMembers();
   drawSupports();
   drawForces();
@@ -70,74 +95,58 @@ function render() {
   if (S.pendingMember !== null) drawPendingMember();
 }
 
-function drawGrid(W, H) {
-  const minStep = 30;
-  let step = S.scale;
-  while (step < minStep) step *= 2;
-  while (step > minStep * 5) step /= 2;
+function drawGrid() {
+  const W = canvas.width, H = canvas.height;
+  const minPx = 40;
+  let worldStep = 1;
+  while (worldStep * S.scale < minPx) worldStep *= 2;
+  while (worldStep * S.scale > minPx * 5) worldStep /= 2;
 
-  const [wx0, wy0] = canvasToWorld(0, H);
-  const [wx1, wy1] = canvasToWorld(W, 0);
+  const [wx0] = canvasToWorld(0, 0);
+  const [wx1] = canvasToWorld(W, 0);
+  const [,wy0] = canvasToWorld(0, H);
+  const [,wy1] = canvasToWorld(0, 0);
 
-  ctx.lineWidth = .5;
+  const startX = Math.floor(wx0 / worldStep) * worldStep;
+  const startY = Math.floor(wy0 / worldStep) * worldStep;
 
-  const startX = Math.floor(wx0 / (step / S.scale)) * (step / S.scale);
-  const startY = Math.floor(wy0 / (step / S.scale)) * (step / S.scale);
-  const worldStep = step / S.scale;
-
+  // Vertical grid lines
   for (let wx = startX; wx <= wx1 + worldStep; wx += worldStep) {
     const [cx] = worldToCanvas(wx, 0);
-    const isAxis = Math.abs(wx) < 0.001;
-    ctx.strokeStyle = isAxis ? 'rgba(0,207,255,.25)' : 'rgba(26,51,85,.9)';
-    ctx.lineWidth = isAxis ? 1 : .5;
-    ctx.beginPath();
-    ctx.moveTo(cx, 0); ctx.lineTo(cx, H);
-    ctx.stroke();
+    const isAxis = Math.abs(wx) < 1e-9;
+    ctx.strokeStyle = isAxis ? CLR.axis : CLR.grid;
+    ctx.lineWidth   = isAxis ? 1.2 : 0.5;
+    ctx.beginPath(); ctx.moveTo(cx, 0); ctx.lineTo(cx, H); ctx.stroke();
+    if (!isAxis) {
+      const [,cy0] = worldToCanvas(0, 0);
+      const ly = Math.min(Math.max(cy0 + 4, 2), H - 14);
+      ctx.font = '10px JetBrains Mono'; ctx.fillStyle = CLR.axis;
+      ctx.textAlign = 'center'; ctx.textBaseline = 'top';
+      ctx.fillText(fmtCoord(wx), cx, ly);
+    }
   }
+  // Horizontal grid lines
   for (let wy = startY; wy <= wy1 + worldStep; wy += worldStep) {
-    const [, cy] = worldToCanvas(0, wy);
-    const isAxis = Math.abs(wy) < 0.001;
-    ctx.strokeStyle = isAxis ? 'rgba(0,207,255,.25)' : 'rgba(26,51,85,.9)';
-    ctx.lineWidth = isAxis ? 1 : .5;
-    ctx.beginPath();
-    ctx.moveTo(0, cy); ctx.lineTo(W, cy);
-    ctx.stroke();
-  }
-
-  // Axis labels near axis
-  ctx.fillStyle = 'rgba(0,207,255,.35)';
-  ctx.font = '11px JetBrains Mono';
-  ctx.textAlign = 'center';
-  ctx.textBaseline = 'top';
-  for (let wx = startX; wx <= wx1 + worldStep; wx += worldStep) {
-    if (Math.abs(wx) < 0.001) continue;
-    const [cx] = worldToCanvas(wx, 0);
-    const [, cy0] = worldToCanvas(0, 0);
-    const labelY = Math.min(Math.max(cy0 + 4, 2), H - 14);
-    ctx.fillText(fmtCoord(wx), cx, labelY);
-  }
-  ctx.textAlign = 'right';
-  ctx.textBaseline = 'middle';
-  for (let wy = startY; wy <= wy1 + worldStep; wy += worldStep) {
-    if (Math.abs(wy) < 0.001) continue;
-    const [, cy] = worldToCanvas(0, wy);
-    const [cx0] = worldToCanvas(0, 0);
-    const labelX = Math.min(Math.max(cx0 - 4, 24), W - 2);
-    ctx.fillText(fmtCoord(wy), labelX, cy);
+    const [,cy] = worldToCanvas(0, wy);
+    const isAxis = Math.abs(wy) < 1e-9;
+    ctx.strokeStyle = isAxis ? CLR.axis : CLR.grid;
+    ctx.lineWidth   = isAxis ? 1.2 : 0.5;
+    ctx.beginPath(); ctx.moveTo(0, cy); ctx.lineTo(W, cy); ctx.stroke();
+    if (!isAxis) {
+      const [cx0] = worldToCanvas(0, 0);
+      const lx = Math.min(Math.max(cx0 - 4, 22), W - 4);
+      ctx.font = '10px JetBrains Mono'; ctx.fillStyle = CLR.axis;
+      ctx.textAlign = 'right'; ctx.textBaseline = 'middle';
+      ctx.fillText(fmtCoord(wy), lx, cy);
+    }
   }
 }
 
-function fmtCoord(v) {
-  if (Number.isInteger(v)) return v.toString();
-  return v.toFixed(1).replace(/\.0$/, '');
-}
-
-function memberColor(idx) {
-  if (!S.results || !S.results.memberForces) return 'rgba(0,136,204,.7)';
+function memberStrokeColor(idx) {
+  if (!S.results || !S.results.memberForces) return CLR.accent2;
   const f = S.results.memberForces[idx];
-  const eps = 1e-6;
-  if (Math.abs(f) < eps) return 'var(--zero)';
-  return f > 0 ? 'var(--tension)' : 'var(--compress)';
+  if (Math.abs(f) < 1e-6) return CLR.zero;
+  return f > 0 ? CLR.tension : CLR.compress;
 }
 
 function drawMembers() {
@@ -146,30 +155,33 @@ function drawMembers() {
     if (!na || !nb) return;
     const [x1, y1] = worldToCanvas(na.x, na.y);
     const [x2, y2] = worldToCanvas(nb.x, nb.y);
-
     const isCrossing = S.crossings.some(c => c.includes(idx));
 
-    ctx.lineWidth = 3;
-    ctx.strokeStyle = isCrossing ? 'var(--warn)' : memberColor(idx);
+    // Shadow for visibility
+    ctx.shadowColor = isCrossing ? 'rgba(255,82,82,.5)' : 'rgba(0,0,0,.6)';
+    ctx.shadowBlur  = 4;
+    ctx.lineWidth   = 3.5;
+    ctx.strokeStyle = isCrossing ? CLR.warn : memberStrokeColor(idx);
     ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(x2, y2); ctx.stroke();
+    ctx.shadowBlur = 0;
 
     // Label
     const mx = (x1 + x2) / 2, my = (y1 + y2) / 2;
     if (S.results && S.results.memberForces) {
       const f = S.results.memberForces[idx];
-      const eps = 1e-6;
-      const label = Math.abs(f) < eps ? '0' : fmtForce(Math.abs(f));
+      const abs = Math.abs(f);
+      const lbl = abs < 1e-6 ? '0' : fmtForce(abs);
+      const col = memberStrokeColor(idx);
       ctx.font = 'bold 11px JetBrains Mono';
       ctx.textAlign = 'center'; ctx.textBaseline = 'bottom';
-      ctx.fillStyle = '#000'; ctx.lineWidth = 3;
-      ctx.strokeStyle = '#000';
-      ctx.strokeText(label, mx, my - 4);
-      ctx.fillStyle = memberColor(idx);
-      ctx.fillText(label, mx, my - 4);
+      // Dark outline
+      ctx.strokeStyle = CLR.bg; ctx.lineWidth = 3;
+      ctx.strokeText(lbl, mx, my - 5);
+      ctx.fillStyle = col;
+      ctx.fillText(lbl, mx, my - 5);
     } else {
-      ctx.font = '10px JetBrains Mono';
+      ctx.font = '10px JetBrains Mono'; ctx.fillStyle = CLR.muted;
       ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-      ctx.fillStyle = 'rgba(0,207,255,.5)';
       ctx.fillText('b' + (idx + 1), mx, my);
     }
   });
@@ -177,96 +189,74 @@ function drawMembers() {
 
 function drawPendingMember() {
   const na = S.nodes[S.pendingMember];
-  if (!na) return;
+  if (!na || !S._mouseCanvas) return;
   const [x1, y1] = worldToCanvas(na.x, na.y);
-  const [mx, my] = S._mouseCanvas || [x1, y1];
+  const [mx, my] = S._mouseCanvas;
   ctx.setLineDash([6, 4]);
-  ctx.lineWidth = 2; ctx.strokeStyle = 'rgba(0,207,255,.4)';
+  ctx.lineWidth = 2; ctx.strokeStyle = 'rgba(0,207,255,.45)';
   ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(mx, my); ctx.stroke();
   ctx.setLineDash([]);
 }
 
-function drawSupport(sx, sy, type, reactionX, reactionY) {
+// ── Supports ──────────────────────────────────────────────────────
+function drawSupportSymbol(cx, cy, type) {
   const sz = 14;
   ctx.save();
+  ctx.translate(cx, cy);
 
   if (type === 'pin') {
-    // Triangle pointing down
+    // Triangle
     ctx.beginPath();
-    ctx.moveTo(sx, sy);
-    ctx.lineTo(sx - sz, sy + sz * 1.3);
-    ctx.lineTo(sx + sz, sy + sz * 1.3);
+    ctx.moveTo(0, 0); ctx.lineTo(-sz, sz * 1.4); ctx.lineTo(sz, sz * 1.4);
     ctx.closePath();
-    ctx.fillStyle = 'rgba(255,152,0,.15)';
-    ctx.strokeStyle = 'var(--support)';
-    ctx.lineWidth = 1.5; ctx.fill(); ctx.stroke();
-    // Hatch below
+    ctx.fillStyle = 'rgba(255,152,0,.18)'; ctx.strokeStyle = CLR.support; ctx.lineWidth = 1.5;
+    ctx.fill(); ctx.stroke();
+    // Base line
+    ctx.beginPath(); ctx.moveTo(-sz - 3, sz * 1.4); ctx.lineTo(sz + 3, sz * 1.4);
+    ctx.strokeStyle = CLR.support; ctx.lineWidth = 1.5; ctx.stroke();
+    // Hatch
+    ctx.strokeStyle = 'rgba(255,152,0,.35)'; ctx.lineWidth = 1;
     for (let i = -sz; i <= sz; i += 5) {
       ctx.beginPath();
-      ctx.moveTo(sx - sz + i, sy + sz * 1.3);
-      ctx.lineTo(sx - sz + i - 5, sy + sz * 1.3 + 7);
-      ctx.strokeStyle = 'rgba(255,152,0,.4)'; ctx.lineWidth = 1; ctx.stroke();
+      ctx.moveTo(-sz + i, sz * 1.4); ctx.lineTo(-sz + i - 5, sz * 1.4 + 7);
+      ctx.stroke();
     }
-    // Fixed line
-    ctx.beginPath();
-    ctx.moveTo(sx - sz - 3, sy + sz * 1.3);
-    ctx.lineTo(sx + sz + 3, sy + sz * 1.3);
-    ctx.strokeStyle = 'var(--support)'; ctx.lineWidth = 1.5; ctx.stroke();
   }
   else if (type === 'roller_h') {
-    // Triangle + circles below (free in x, fixed in y)
+    // Triangle
     ctx.beginPath();
-    ctx.moveTo(sx, sy);
-    ctx.lineTo(sx - sz, sy + sz * 1.3);
-    ctx.lineTo(sx + sz, sy + sz * 1.3);
+    ctx.moveTo(0, 0); ctx.lineTo(-sz, sz * 1.4); ctx.lineTo(sz, sz * 1.4);
     ctx.closePath();
-    ctx.fillStyle = 'rgba(255,152,0,.15)';
-    ctx.strokeStyle = 'var(--support)';
-    ctx.lineWidth = 1.5; ctx.fill(); ctx.stroke();
-    // Rollers
+    ctx.fillStyle = 'rgba(255,152,0,.18)'; ctx.strokeStyle = CLR.support; ctx.lineWidth = 1.5;
+    ctx.fill(); ctx.stroke();
+    // Roller circles
     for (let i = -1; i <= 1; i++) {
-      ctx.beginPath();
-      ctx.arc(sx + i * sz * 0.7, sy + sz * 1.3 + 5, 3.5, 0, Math.PI * 2);
-      ctx.fillStyle = 'rgba(255,152,0,.25)';
-      ctx.strokeStyle = 'var(--support)'; ctx.lineWidth = 1;
+      ctx.beginPath(); ctx.arc(i * sz * 0.65, sz * 1.4 + 5.5, 3.5, 0, Math.PI * 2);
+      ctx.fillStyle = 'rgba(255,152,0,.25)'; ctx.strokeStyle = CLR.support; ctx.lineWidth = 1.2;
       ctx.fill(); ctx.stroke();
     }
-    ctx.beginPath();
-    ctx.moveTo(sx - sz - 3, sy + sz * 1.3 + 10);
-    ctx.lineTo(sx + sz + 3, sy + sz * 1.3 + 10);
-    ctx.strokeStyle = 'rgba(255,152,0,.4)'; ctx.lineWidth = 1; ctx.stroke();
+    // Ground line
+    ctx.beginPath(); ctx.moveTo(-sz - 3, sz * 1.4 + 10); ctx.lineTo(sz + 3, sz * 1.4 + 10);
+    ctx.strokeStyle = 'rgba(255,152,0,.5)'; ctx.lineWidth = 1.2; ctx.stroke();
   }
   else if (type === 'roller_v') {
-    // Sideways triangle + circles to the right (free in y, fixed in x)
-    ctx.translate(sx, sy);
-    ctx.rotate(Math.PI / 2);
+    // Rotated triangle (wall on the right → support pointing left)
+    ctx.rotate(-Math.PI / 2);
     ctx.beginPath();
-    ctx.moveTo(0, 0);
-    ctx.lineTo(-sz, sz * 1.3);
-    ctx.lineTo(sz, sz * 1.3);
+    ctx.moveTo(0, 0); ctx.lineTo(-sz, sz * 1.4); ctx.lineTo(sz, sz * 1.4);
     ctx.closePath();
-    ctx.fillStyle = 'rgba(255,152,0,.15)';
-    ctx.strokeStyle = 'var(--support)';
-    ctx.lineWidth = 1.5; ctx.fill(); ctx.stroke();
+    ctx.fillStyle = 'rgba(255,152,0,.18)'; ctx.strokeStyle = CLR.support; ctx.lineWidth = 1.5;
+    ctx.fill(); ctx.stroke();
     for (let i = -1; i <= 1; i++) {
-      ctx.beginPath();
-      ctx.arc(i * sz * 0.7, sz * 1.3 + 5, 3.5, 0, Math.PI * 2);
-      ctx.fillStyle = 'rgba(255,152,0,.25)';
-      ctx.strokeStyle = 'var(--support)'; ctx.lineWidth = 1;
+      ctx.beginPath(); ctx.arc(i * sz * 0.65, sz * 1.4 + 5.5, 3.5, 0, Math.PI * 2);
+      ctx.fillStyle = 'rgba(255,152,0,.25)'; ctx.strokeStyle = CLR.support; ctx.lineWidth = 1.2;
       ctx.fill(); ctx.stroke();
     }
+    ctx.beginPath(); ctx.moveTo(-sz - 3, sz * 1.4 + 10); ctx.lineTo(sz + 3, sz * 1.4 + 10);
+    ctx.strokeStyle = 'rgba(255,152,0,.5)'; ctx.lineWidth = 1.2; ctx.stroke();
   }
-  ctx.restore();
 
-  // Reaction arrows
-  if (S.results && S.results.reactionForces) {
-    const rf = S.results.reactionForces;
-    const nodeIdx = S.supports.find(s => {
-      const [scx, scy] = worldToCanvas(S.nodes[s.node].x, S.nodes[s.node].y);
-      return Math.abs(scx - sx) < 1 && Math.abs(scy - sy) < 1;
-    });
-    // drawn in drawNodes via separate call, skip here
-  }
+  ctx.restore();
 }
 
 function drawSupports() {
@@ -274,24 +264,28 @@ function drawSupports() {
     const n = S.nodes[s.node];
     if (!n) return;
     const [cx, cy] = worldToCanvas(n.x, n.y);
-    drawSupport(cx, cy, s.type);
+    drawSupportSymbol(cx, cy, s.type);
   });
 }
 
-function drawArrow(x1, y1, x2, y2, color, lw = 2, headLen = 10) {
+// ── Forces ────────────────────────────────────────────────────────
+function drawArrow(x1, y1, x2, y2, color, lw, headLen) {
+  lw = lw || 2; headLen = headLen || 10;
   const angle = Math.atan2(y2 - y1, x2 - x1);
   ctx.strokeStyle = color; ctx.fillStyle = color; ctx.lineWidth = lw;
+  ctx.shadowColor = 'rgba(0,0,0,.5)'; ctx.shadowBlur = 3;
   ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(x2, y2); ctx.stroke();
   ctx.beginPath();
   ctx.moveTo(x2, y2);
-  ctx.lineTo(x2 - headLen * Math.cos(angle - 0.35), y2 - headLen * Math.sin(angle - 0.35));
-  ctx.lineTo(x2 - headLen * Math.cos(angle + 0.35), y2 - headLen * Math.sin(angle + 0.35));
+  ctx.lineTo(x2 - headLen * Math.cos(angle - 0.38), y2 - headLen * Math.sin(angle - 0.38));
+  ctx.lineTo(x2 - headLen * Math.cos(angle + 0.38), y2 - headLen * Math.sin(angle + 0.38));
   ctx.closePath(); ctx.fill();
+  ctx.shadowBlur = 0;
 }
 
 function drawForces() {
-  const scale = Math.min(S.scale * 0.8, 50);
   const maxF = Math.max(...S.forces.map(f => Math.hypot(f.fx, f.fy)), 1);
+  const baseLen = Math.min(S.scale * 0.9, 55);
 
   S.forces.forEach(f => {
     const n = S.nodes[f.node];
@@ -299,99 +293,105 @@ function drawForces() {
     const [cx, cy] = worldToCanvas(n.x, n.y);
     const mag = Math.hypot(f.fx, f.fy);
     if (mag < 1e-12) return;
-    const ratio = mag / maxF;
-    const arrowLen = Math.max(30, scale * ratio);
+    const len = Math.max(28, baseLen * (mag / maxF));
     const ux = f.fx / mag, uy = -f.fy / mag;
-    // Draw from tip toward node
-    drawArrow(cx - ux * arrowLen, cy - uy * arrowLen, cx, cy, 'var(--force-clr)', 2, 9);
-
-    // Label
-    ctx.font = 'bold 10px JetBrains Mono';
-    ctx.fillStyle = 'var(--force-clr)';
+    drawArrow(cx - ux * len, cy - uy * len, cx, cy, CLR.force, 2.5, 10);
+    ctx.font = 'bold 11px JetBrains Mono'; ctx.fillStyle = CLR.force;
     ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-    const lx = cx - ux * (arrowLen / 2);
-    const ly = cy - uy * (arrowLen / 2);
-    ctx.fillText(fmtForce(mag), lx + uy * 10, ly + ux * 10);
+    const lx = cx - ux * (len / 2 + 2), ly = cy - uy * (len / 2 + 2);
+    ctx.strokeStyle = CLR.bg; ctx.lineWidth = 2.5;
+    ctx.strokeText(fmtForce(mag), lx + uy * 11, ly + ux * 11);
+    ctx.fillText(fmtForce(mag), lx + uy * 11, ly + ux * 11);
   });
 
-  // Reaction force arrows
+  // Reaction arrows after analysis
   if (S.results && S.results.reactionForces) {
     const rf = S.results.reactionForces;
+    const maxR = Math.max(...Object.values(rf).flatMap(v => [Math.abs(v.x), Math.abs(v.y)]), 1);
+    const rscale = Math.min(S.scale * 0.9, 55);
+
     S.supports.forEach(s => {
       const n = S.nodes[s.node];
       if (!n) return;
       const [cx, cy] = worldToCanvas(n.x, n.y);
       const r = rf[s.node] || {x: 0, y: 0};
-      const magX = Math.abs(r.x), magY = Math.abs(r.y);
-      const maxR = Math.max(...Object.values(rf).map(v => Math.max(Math.abs(v.x), Math.abs(v.y))), 1);
-      const rscale = Math.max(30, scale);
 
-      if (magX > 1e-6) {
-        const len = Math.max(20, rscale * magX / maxR);
-        const sx = cx + (r.x > 0 ? -1 : 1) * len, sy = cy;
-        drawArrow(sx, sy, cx, cy, 'rgba(255,152,0,.8)', 2, 8);
-        ctx.font = '9px JetBrains Mono';
-        ctx.fillStyle = 'var(--support)';
+      if (Math.abs(r.x) > 1e-6) {
+        const len = Math.max(22, rscale * Math.abs(r.x) / maxR);
+        const ex = cx + (r.x > 0 ? -1 : 1) * len;
+        drawArrow(ex, cy, cx, cy, 'rgba(255,152,0,.9)', 2, 9);
+        ctx.font = 'bold 10px JetBrains Mono'; ctx.fillStyle = CLR.support;
         ctx.textAlign = 'center'; ctx.textBaseline = 'bottom';
-        ctx.fillText(fmtForce(magX), (sx + cx) / 2, cy - 6);
+        ctx.strokeStyle = CLR.bg; ctx.lineWidth = 2;
+        ctx.strokeText(fmtForce(Math.abs(r.x)), (ex + cx) / 2, cy - 5);
+        ctx.fillText(fmtForce(Math.abs(r.x)), (ex + cx) / 2, cy - 5);
       }
-      if (magY > 1e-6) {
-        const len = Math.max(20, rscale * magY / maxR);
-        const ey = cy + (r.y > 0 ? 1 : -1) * len, ex = cx;
-        drawArrow(cx, ey, cx, cy, 'rgba(255,152,0,.8)', 2, 8);
-        ctx.font = '9px JetBrains Mono';
-        ctx.fillStyle = 'var(--support)';
+      if (Math.abs(r.y) > 1e-6) {
+        const len = Math.max(22, rscale * Math.abs(r.y) / maxR);
+        const ey = cy + (r.y > 0 ? 1 : -1) * len;
+        drawArrow(cx, ey, cx, cy, 'rgba(255,152,0,.9)', 2, 9);
+        ctx.font = 'bold 10px JetBrains Mono'; ctx.fillStyle = CLR.support;
         ctx.textAlign = 'left'; ctx.textBaseline = 'middle';
-        ctx.fillText(fmtForce(magY), cx + 6, (ey + cy) / 2);
+        ctx.strokeStyle = CLR.bg; ctx.lineWidth = 2;
+        ctx.strokeText(fmtForce(Math.abs(r.y)), cx + 7, (ey + cy) / 2);
+        ctx.fillText(fmtForce(Math.abs(r.y)), cx + 7, (ey + cy) / 2);
       }
     });
   }
 }
 
+// ── Nodes ─────────────────────────────────────────────────────────
 function drawNodes() {
-  // Collect highlighted nodes from diagnostics
   const diagNodes = new Set();
   if (S.results && S.results.diagIssues) {
-    S.results.diagIssues.forEach(d => d.nodes && d.nodes.forEach(i => diagNodes.add(i)));
+    S.results.diagIssues.filter(d => d.level === 'error').forEach(d =>
+      d.nodes && d.nodes.forEach(i => diagNodes.add(i)));
   }
 
   S.nodes.forEach((n, idx) => {
     const [cx, cy] = worldToCanvas(n.x, n.y);
-    const isSelected = S.pendingMember === idx;
-    const isProblem  = diagNodes.has(idx);
-    const r = isSelected ? 9 : 7;
+    const isSel = S.pendingMember === idx;
+    const isErr = diagNodes.has(idx);
+    const r = isSel ? 9 : 7;
 
-    if (isSelected) {
-      ctx.beginPath(); ctx.arc(cx, cy, 13, 0, Math.PI * 2);
+    // Glow ring
+    if (isSel) {
+      ctx.beginPath(); ctx.arc(cx, cy, 14, 0, Math.PI * 2);
       ctx.fillStyle = 'rgba(0,207,255,.12)'; ctx.fill();
     }
-    if (isProblem) {
+    if (isErr) {
       ctx.beginPath(); ctx.arc(cx, cy, 13, 0, Math.PI * 2);
-      ctx.fillStyle = 'rgba(255,82,82,.12)'; ctx.fill();
-      ctx.strokeStyle = 'rgba(255,82,82,.6)'; ctx.lineWidth = 1.5;
-      ctx.setLineDash([4,3]); ctx.stroke(); ctx.setLineDash([]);
+      ctx.fillStyle = 'rgba(255,82,82,.1)'; ctx.fill();
+      ctx.strokeStyle = 'rgba(255,82,82,.55)'; ctx.lineWidth = 1.5;
+      ctx.setLineDash([4, 3]); ctx.stroke(); ctx.setLineDash([]);
     }
 
+    // Node circle — bright fill so it's visible after analysis
+    ctx.shadowColor = isSel ? 'rgba(0,207,255,.6)' : 'rgba(0,0,0,.5)';
+    ctx.shadowBlur  = isSel ? 8 : 3;
     ctx.beginPath(); ctx.arc(cx, cy, r, 0, Math.PI * 2);
-    ctx.fillStyle = isSelected ? 'var(--accent)' : isProblem ? 'rgba(255,82,82,.2)' : 'var(--panel)';
-    ctx.strokeStyle = isSelected ? '#fff' : isProblem ? 'var(--warn)' : 'var(--accent)';
-    ctx.lineWidth = isSelected ? 2 : 1.5;
+    ctx.fillStyle   = isSel ? CLR.accent : isErr ? 'rgba(255,82,82,.25)' : CLR.nodeBg;
+    ctx.strokeStyle = isSel ? '#fff' : isErr ? CLR.nodeErr : CLR.accent;
+    ctx.lineWidth   = isSel ? 2.5 : 2;
     ctx.fill(); ctx.stroke();
+    ctx.shadowBlur = 0;
 
-    ctx.font = 'bold 10px Rajdhani';
-    ctx.fillStyle = isSelected ? '#001a2e' : isProblem ? 'var(--warn)' : 'var(--accent)';
+    // Number inside
+    ctx.font = `bold ${r > 7 ? 11 : 10}px Rajdhani`;
+    ctx.fillStyle = isSel ? '#001a2e' : isErr ? CLR.nodeErr : CLR.accent;
     ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
-    ctx.fillText(idx + 1, cx, cy);
+    ctx.fillText(idx + 1, cx, cy + 0.5);
 
+    // Coord label
     ctx.font = '9px JetBrains Mono';
     ctx.fillStyle = 'rgba(0,207,255,.55)';
     ctx.textAlign = 'left'; ctx.textBaseline = 'bottom';
-    ctx.fillText(`(${fmtCoord(n.x)},${fmtCoord(n.y)})`, cx + 9, cy - 4);
+    ctx.fillText(`(${fmtCoord(n.x)},${fmtCoord(n.y)})`, cx + 10, cy - 4);
   });
 }
 
 // ═══════════════════════════════════════════════════════════════════
-// GEOMETRY – CROSSING DETECTION
+// CROSSING DETECTION
 // ═══════════════════════════════════════════════════════════════════
 function segmentsProperlyIntersect(p1, p2, p3, p4) {
   const d1x = p2.x - p1.x, d1y = p2.y - p1.y;
@@ -410,37 +410,132 @@ function checkCrossings() {
   for (let i = 0; i < S.members.length; i++) {
     for (let j = i + 1; j < S.members.length; j++) {
       const mi = S.members[i], mj = S.members[j];
-      // Skip if they share a node
       if (mi.a === mj.a || mi.a === mj.b || mi.b === mj.a || mi.b === mj.b) continue;
-      const ni = S.nodes, p1 = ni[mi.a], p2 = ni[mi.b], p3 = ni[mj.a], p4 = ni[mj.b];
-      if (p1 && p2 && p3 && p4 && segmentsProperlyIntersect(p1, p2, p3, p4)) {
+      const ns = S.nodes;
+      if (segmentsProperlyIntersect(ns[mi.a], ns[mi.b], ns[mj.a], ns[mj.b]))
         S.crossings.push([i, j]);
-      }
     }
   }
-  const warn = document.getElementById('crossing-warning');
+  const el = document.getElementById('crossing-warning');
   if (S.crossings.length > 0) {
-    const pairs = S.crossings.map(([a, b]) => `b${a+1}×b${b+1}`).join(', ');
-    warn.textContent = `⚠ Cruzamento detectado: ${pairs}`;
-    warn.classList.add('visible');
+    el.textContent = `⚠ Cruzamento: ${S.crossings.map(([a, b]) => `b${a+1}×b${b+1}`).join(', ')}`;
+    el.classList.add('visible');
   } else {
-    warn.classList.remove('visible');
+    el.classList.remove('visible');
   }
 }
 
 // ═══════════════════════════════════════════════════════════════════
-// TRUSS SOLVER – Method of Joints
+// STRUCTURAL DIAGNOSTICS
+// ═══════════════════════════════════════════════════════════════════
+function buildAdj() {
+  const adj = S.nodes.map(() => new Set());
+  S.members.forEach(m => { adj[m.a].add(m.b); adj[m.b].add(m.a); });
+  return adj;
+}
+
+function findRectPanels() {
+  const adj = buildAdj();
+  const hasEdge = (a, b) => adj[a].has(b);
+  const panels = [], seen = new Set();
+  for (let a = 0; a < S.nodes.length; a++) {
+    for (const c of adj[a]) {
+      for (const b of adj[c]) {
+        if (b <= a) continue;
+        if (hasEdge(a, b)) continue; // already connected directly
+        for (const d of adj[b]) {
+          if (!adj[a].has(d)) continue;
+          if (d === c) continue;
+          if (!hasEdge(c, d)) { // quadrilateral a-c-b-d without diagonals
+            const key = [a, b, c, d].sort((x,y)=>x-y).join('-');
+            if (!seen.has(key)) { seen.add(key); panels.push([a, c, b, d]); }
+          }
+        }
+      }
+    }
+  }
+  return panels;
+}
+
+function diagnoseStructure() {
+  const { nodes: ns, members: ms, supports: sups } = S;
+  const issues = [];
+  const adj = buildAdj();
+
+  // 1. Isolated nodes
+  ns.forEach((n, i) => {
+    if (adj[i].size === 0)
+      issues.push({ level:'error', msg:`Nó N${i+1} não está conectado a nenhuma barra.`, nodes:[i] });
+  });
+
+  // 2. Rectangular panels without diagonal
+  findRectPanels().forEach(p => {
+    issues.push({
+      level: 'error',
+      msg: `Painel sem diagonal entre N${p[0]+1}–N${p[1]+1}–N${p[2]+1}–N${p[3]+1}. Adicione uma barra diagonal neste painel.`,
+      nodes: p
+    });
+  });
+
+  // 3. Support-geometry compatibility
+  const pins     = sups.filter(s => s.type === 'pin');
+  const rollerVs = sups.filter(s => s.type === 'roller_v');
+
+  // Two pins = hyperstatic (but that's caught by count)
+  // roller_v at same height as pin = potentially singular
+  pins.forEach(pin => {
+    rollerVs.forEach(rv => {
+      const np = ns[pin.node], nr = ns[rv.node];
+      if (!np || !nr) return;
+      if (Math.abs(np.y - nr.y) < 0.01) {
+        issues.push({
+          level: 'warning',
+          msg: `Pino (N${pin.node+1}) e Rolete Vertical (N${rv.node+1}) estão na mesma altura (y=${fmtCoord(np.y)}). `
+             + `O rolete vertical reage apenas horizontalmente — sem braço de momento vertical, o sistema pode ser singular. `
+             + `Troque o rolete vertical por um Rolete Horizontal (Ry) ou posicione-o em altura diferente.`,
+          nodes: [pin.node, rv.node]
+        });
+      }
+    });
+  });
+
+  // 4. Collinear-only free nodes
+  const supSet = new Set(sups.map(s => s.node));
+  ns.forEach((n, i) => {
+    if (supSet.has(i)) return;
+    const nbrs = [...adj[i]];
+    if (nbrs.length < 2) return;
+    const a0 = Math.atan2(ns[nbrs[0]].y - n.y, ns[nbrs[0]].x - n.x);
+    const allCollinear = nbrs.every(j => {
+      const a = Math.atan2(ns[j].y - n.y, ns[j].x - n.x);
+      const d = Math.abs(a - a0) % Math.PI;
+      return d < 0.002 || Math.abs(d - Math.PI) < 0.002;
+    });
+    if (allCollinear)
+      issues.push({
+        level: 'warning',
+        msg: `Nó N${i+1}: todas as barras estão alinhadas (colineares). O nó não resiste a cargas transversais.`,
+        nodes: [i]
+      });
+  });
+
+  return issues;
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// SOLVER — Method of Joints (Gaussian Elimination)
 // ═══════════════════════════════════════════════════════════════════
 function gaussianElim(A, b) {
   const n = b.length;
   const M = A.map((row, i) => [...row, b[i]]);
+  let singularRow = -1;
   for (let p = 0; p < n; p++) {
     let maxIdx = p;
     for (let i = p + 1; i < n; i++)
       if (Math.abs(M[i][p]) > Math.abs(M[maxIdx][p])) maxIdx = i;
     [M[p], M[maxIdx]] = [M[maxIdx], M[p]];
+    if (Math.abs(M[p][p]) < 1e-10) { singularRow = p; return { sol: null, singularRow }; }
     const pv = M[p][p];
-    if (Math.abs(pv) < 1e-10) return { sol: null, singularRow: p };
     for (let i = 0; i < n; i++) {
       if (i === p) continue;
       const f = M[i][p] / pv;
@@ -450,131 +545,22 @@ function gaussianElim(A, b) {
   return { sol: M.map((row, i) => row[n] / row[i]), singularRow: -1 };
 }
 
-// ─── Structural Diagnostics ───────────────────────────────────────
-function buildAdjacency(ns, ms) {
-  const adj = Array.from({length: ns.length}, () => new Set());
-  ms.forEach(m => { adj[m.a].add(m.b); adj[m.b].add(m.a); });
-  return adj;
-}
-
-/** Find quadrilateral panels with no diagonal (internal mechanisms). */
-function findRectPanels(ns, ms) {
-  const adj = buildAdjacency(ns, ms);
-  const hasEdge = (a, b) => adj[a].has(b);
-  const panels = [], seen = new Set();
-
-  for (let a = 0; a < ns.length; a++) {
-    for (let b = a + 1; b < ns.length; b++) {
-      if (hasEdge(a, b)) continue; // adjacent → skip
-      const common = [...adj[a]].filter(x => adj[b].has(x));
-      for (let i = 0; i < common.length; i++) {
-        for (let j = i + 1; j < common.length; j++) {
-          const c = common[i], d = common[j];
-          if (!hasEdge(c, d)) {  // quadrilateral a-c-b-d-a, no diagonals
-            const key = [a, b, c, d].sort((x,y) => x-y).join('-');
-            if (!seen.has(key)) {
-              seen.add(key);
-              panels.push([a, c, b, d]);
-            }
-          }
-        }
-      }
-    }
-  }
-  return panels;
-}
-
-/** Check for nodes connected by only collinear members (no transverse resistance). */
-function findCollinearNodes(ns, ms, sups) {
-  const supNodes = new Set(sups.map(s => s.node));
-  const adj = buildAdjacency(ns, ms);
-  const problems = [];
-  ns.forEach((n, i) => {
-    if (supNodes.has(i)) return;
-    const nbrs = [...adj[i]];
-    if (nbrs.length < 2) return;
-    // Compute angles of all connected members
-    const angles = nbrs.map(j => {
-      const dx = ns[j].x - n.x, dy = ns[j].y - n.y;
-      return Math.atan2(dy, dx);
-    });
-    // Check if all angles are collinear (parallel or anti-parallel)
-    const a0 = angles[0];
-    const allCollinear = angles.every(a => {
-      const diff = Math.abs(a - a0) % Math.PI;
-      return diff < 0.001 || Math.abs(diff - Math.PI) < 0.001;
-    });
-    if (allCollinear) problems.push(i);
-  });
-  return problems;
-}
-
-/** Full diagnostic: returns array of {level, msg, nodes} */
-function diagnoseStructure() {
-  const {nodes: ns, members: ms, supports: sups} = S;
-  const issues = [];
-  const adj = buildAdjacency(ns, ms);
-
-  // 1. Isolated nodes
-  ns.forEach((n, i) => {
-    if (adj[i].size === 0) issues.push({level:'error', msg:`Nó N${i+1} não está conectado a nenhuma barra.`, nodes:[i]});
-  });
-
-  // 2. Rectangular panels without diagonal
-  const panels = findRectPanels(ns, ms);
-  panels.forEach(p => {
-    const labels = p.map(i => `N${i+1}`).join('–');
-    issues.push({
-      level: 'error',
-      msg: `Painel retangular sem diagonal: ${labels}. Adicione uma barra diagonal neste painel.`,
-      nodes: p
-    });
-  });
-
-  // 3. Collinear-only nodes (can't resist transverse forces)
-  const collinear = findCollinearNodes(ns, ms, sups);
-  collinear.forEach(i => {
-    issues.push({
-      level: 'warning',
-      msg: `Nó N${i+1}: todas as barras conectadas são colineares (nó não resiste a forças transversais).`,
-      nodes: [i]
-    });
-  });
-
-  // 4. Support count check
-  const r = sups.reduce((acc, s) => acc + (s.type === 'pin' ? 2 : 1), 0);
-  if (r < 3) issues.push({level:'warning', msg:`Vínculos insuficientes (${r} reações). Uma treliça plana precisa de no mínimo 3 componentes de reação.`, nodes:[]});
-
-  // 5. Two pins at same height (Rx indeterminate warning)
-  const pins = sups.filter(s => s.type === 'pin');
-  if (pins.length >= 2) {
-    const ys = pins.map(s => ns[s.node].y);
-    const allSameY = ys.every(y => Math.abs(y - ys[0]) < 0.001);
-    if (allSameY) issues.push({level:'warning', msg:'Dois pinos na mesma altura: as reações horizontais são indeterminadas. Considere substituir um pino por um rolete.', nodes: pins.map(s => s.node)});
-  }
-
-  return issues;
-}
-
 function solveTruss() {
   const { nodes: ns, members: ms, supports: sups, forces: fs } = S;
   const n = ns.length, m = ms.length;
 
   if (n < 2) return { error: 'São necessários pelo menos 2 nós.' };
-  if (m < 1) return { error: 'São necessárias pelo menos 1 barra.' };
+  if (m < 1) return { error: 'São necessária pelo menos 1 barra.' };
   if (sups.length < 1) return { error: 'Nenhum vínculo definido.' };
 
-  // Run structural diagnostics first
   const diagIssues = diagnoseStructure();
-  const errors = diagIssues.filter(d => d.level === 'error');
-  const warnings = diagIssues.filter(d => d.level === 'warning');
 
-  // Build reactions list
+  // Build reactions
   const reactions = [];
   sups.forEach(s => {
-    if (s.type === 'pin')           { reactions.push({node: s.node, dir: 'x'}); reactions.push({node: s.node, dir: 'y'}); }
-    else if (s.type === 'roller_h') reactions.push({node: s.node, dir: 'y'});
-    else if (s.type === 'roller_v') reactions.push({node: s.node, dir: 'x'});
+    if (s.type === 'pin')           { reactions.push({node: s.node, dir:'x'}); reactions.push({node: s.node, dir:'y'}); }
+    else if (s.type === 'roller_h') reactions.push({node: s.node, dir:'y'});
+    else if (s.type === 'roller_v') reactions.push({node: s.node, dir:'x'});
   });
 
   const r = reactions.length;
@@ -583,22 +569,27 @@ function solveTruss() {
 
   if (totalUnk !== totalEq) {
     const diff = totalUnk - totalEq;
-    const base = diff > 0
-      ? `Treliça hiperestática (grau ${diff}): ${totalUnk} incógnitas para ${totalEq} equações.`
-      : `Treliça instável (${-diff} grau(s) de liberdade): apenas ${totalUnk} incógnitas para ${totalEq} equações.`;
-    const hint = diff > 0
-      ? 'Remova barras ou restrições, ou adicione nós.'
-      : 'Adicione barras diagonais ou restrições de vínculo.';
-    return { error: `${base} ${hint}`, diagIssues };
+    if (diff > 0) {
+      return {
+        error: `Treliça hiperestática (grau ${diff}): ${totalUnk} incógnitas para ${totalEq} equações. `
+             + `Remova ${diff} barra(s) ou reação(ões).`,
+        diagIssues
+      };
+    }
+    return {
+      error: `Treliça instável (${-diff} grau(s) de liberdade): ${totalUnk} incógnitas para ${totalEq} equações. `
+           + `Adicione ${-diff} barra(s) ou vínculo(s). Lembre: 2n = m + r (n=nós, m=barras, r=reações totais).`,
+      diagIssues
+    };
   }
 
+  // Build system Ax = b
   const A = Array.from({length: totalEq}, () => new Array(totalUnk).fill(0));
   const b = new Array(totalEq).fill(0);
 
   ms.forEach((mem, j) => {
     const na = ns[mem.a], nb = ns[mem.b];
-    const dx = nb.x - na.x, dy = nb.y - na.y;
-    const L = Math.hypot(dx, dy);
+    const dx = nb.x - na.x, dy = nb.y - na.y, L = Math.hypot(dx, dy);
     if (L < 1e-12) return;
     const cx = dx / L, cy = dy / L;
     A[2 * mem.a    ][j] += cx;  A[2 * mem.a + 1][j] += cy;
@@ -617,19 +608,28 @@ function solveTruss() {
   });
   for (let i = 0; i < n; i++) {
     const ap = fMap[i] || {fx: 0, fy: 0};
-    b[2 * i] = -ap.fx; b[2 * i + 1] = -ap.fy;
+    b[2*i] = -ap.fx; b[2*i+1] = -ap.fy;
   }
 
   const {sol, singularRow} = gaussianElim(A, b);
   if (!sol) {
-    // Build a rich error using diagnostics
-    let errMsg = 'Sistema singular – a treliça é um mecanismo (geometria instável).';
-    if (errors.length > 0) {
-      errMsg = errors.map(e => e.msg).join(' | ');
+    // Build informative message
+    let errMsg = 'Sistema singular — a geometria é instável para esta configuração de vínculos.';
+    const errIssues = diagIssues.filter(d => d.level === 'error');
+    const warnIssues = diagIssues.filter(d => d.level === 'warning');
+
+    // Try to give the most specific cause
+    if (errIssues.length > 0) {
+      errMsg = errIssues[0].msg;
+    } else if (warnIssues.length > 0) {
+      // warning is likely the cause
+      errMsg = warnIssues[0].msg;
+      // remove it from warnings so it shows as main error
+      diagIssues.splice(diagIssues.indexOf(warnIssues[0]), 1);
     } else if (singularRow >= 0) {
       const nodeIdx = Math.floor(singularRow / 2);
       const dir = singularRow % 2 === 0 ? 'horizontal' : 'vertical';
-      errMsg += ` Problema detectado no equilíbrio ${dir} do nó N${nodeIdx+1}.`;
+      errMsg += ` (Equilíbrio ${dir} do nó N${nodeIdx+1} não pode ser satisfeito — verifique a topologia das barras e o tipo de vínculo.)`;
     }
     return { error: errMsg, diagIssues };
   }
@@ -641,41 +641,44 @@ function solveTruss() {
     reactionForces[rx.node][rx.dir] = sol[m + ri];
   });
 
-  return { memberForces, reactionForces, diagIssues: warnings };
+  return { memberForces, reactionForces, diagIssues };
 }
 
 // ═══════════════════════════════════════════════════════════════════
 // FORMAT HELPERS
 // ═══════════════════════════════════════════════════════════════════
+function fmtCoord(v) {
+  if (Number.isInteger(v)) return String(v);
+  return parseFloat(v.toFixed(2)).toString();
+}
 function fmtForce(v) {
-  const abs = Math.abs(v);
-  if (abs >= 10000) return (v / 1000).toFixed(2) + 'k';
-  if (abs >= 1000) return (v / 1000).toFixed(3) + 'k';
-  if (abs >= 100) return v.toFixed(1);
-  if (abs >= 10)  return v.toFixed(2);
+  const a = Math.abs(v);
+  if (a >= 10000) return (v/1000).toFixed(2) + 'k';
+  if (a >= 1000)  return (v/1000).toFixed(3) + 'k';
+  if (a >= 100)   return v.toFixed(1);
+  if (a >= 10)    return v.toFixed(2);
   return v.toFixed(3);
 }
 function fmtVal(v) {
-  if (Math.abs(v) < 1e-6) return '0';
-  return fmtForce(v);
+  return Math.abs(v) < 1e-6 ? '0' : fmtForce(v);
 }
 
 // ═══════════════════════════════════════════════════════════════════
-// UI – SIDEBAR
+// UI — SIDEBAR
 // ═══════════════════════════════════════════════════════════════════
 function updateSidebar() {
   const el = document.getElementById('sidebar-content');
-  let html = '';
+  let h = '';
 
   if (S.mode === 'node') {
-    html += `
+    h += `
     <div class="sb-section">
       <div class="sb-title">Adicionar Nó</div>
-      <div class="sb-hint"><b>Clique no canvas</b> para posicionar ou insira coordenadas:</div>
+      <div class="sb-hint"><b>Clique no canvas</b> para posicionar, ou insira as coordenadas:</div>
       <div style="height:8px"></div>
       <div class="form-row">
-        <div class="form-group"><label class="form-label">X</label><input class="form-input" id="node-x" type="number" step="0.5" placeholder="0"></div>
-        <div class="form-group"><label class="form-label">Y</label><input class="form-input" id="node-y" type="number" step="0.5" placeholder="0"></div>
+        <div class="form-group"><label class="form-label">X</label><input class="form-input" id="ni-x" type="number" step="1" placeholder="0"></div>
+        <div class="form-group"><label class="form-label">Y</label><input class="form-input" id="ni-y" type="number" step="1" placeholder="0"></div>
       </div>
       <button class="btn-add" id="btn-add-node">+ ADICIONAR NÓ</button>
     </div>
@@ -686,7 +689,7 @@ function updateSidebar() {
           S.nodes.map((n, i) => `
           <div class="list-item">
             <span class="list-item-label">N${i+1}</span>
-            <span style="font-size:10px;color:var(--muted)">(${fmtCoord(n.x)}, ${fmtCoord(n.y)})</span>
+            <span class="list-item-info">(${fmtCoord(n.x)}, ${fmtCoord(n.y)})</span>
             <button class="list-item-del" onclick="removeNode(${i})">✕</button>
           </div>`).join('')}
       </div>
@@ -695,9 +698,9 @@ function updateSidebar() {
 
   else if (S.mode === 'member') {
     const hint = S.pendingMember !== null
-      ? `Nó <b>N${S.pendingMember+1}</b> selecionado. Clique no segundo nó.`
-      : '<b>Clique em dois nós</b> sequencialmente para criar uma barra.';
-    html += `
+      ? `Nó <b>N${S.pendingMember+1}</b> selecionado — clique no segundo nó.`
+      : '<b>Clique em dois nós</b> para criar uma barra. Esc cancela.';
+    h += `
     <div class="sb-section">
       <div class="sb-title">Adicionar Barra</div>
       <div class="sb-hint">${hint}</div>
@@ -709,7 +712,7 @@ function updateSidebar() {
           S.members.map((m, i) => `
           <div class="list-item">
             <span class="list-item-label">b${i+1}</span>
-            <span style="font-size:10px;color:var(--muted)">N${m.a+1}–N${m.b+1}</span>
+            <span class="list-item-info">N${m.a+1} → N${m.b+1}</span>
             <button class="list-item-del" onclick="removeMember(${i})">✕</button>
           </div>`).join('')}
       </div>
@@ -717,21 +720,27 @@ function updateSidebar() {
   }
 
   else if (S.mode === 'support') {
-    html += `
+    h += `
     <div class="sb-section">
       <div class="sb-title">Tipo de Vínculo</div>
       <div class="support-type-group">
         <button class="support-type-btn ${S.supportType==='pin'?'active':''}" onclick="setSupportType('pin')">
-          <span class="support-icon">▽</span> Pino (Rx + Ry)
+          <span class="support-icon">▽</span>
+          <span><b>Pino</b><span class="support-desc">Rx + Ry (2 reações)</span></span>
         </button>
         <button class="support-type-btn ${S.supportType==='roller_h'?'active':''}" onclick="setSupportType('roller_h')">
-          <span class="support-icon">◇</span> Rolete Horiz. (Ry)
+          <span class="support-icon">○</span>
+          <span><b>Rolete Horizontal</b><span class="support-desc">Ry apenas — sup. vertical</span></span>
         </button>
         <button class="support-type-btn ${S.supportType==='roller_v'?'active':''}" onclick="setSupportType('roller_v')">
-          <span class="support-icon">◁</span> Rolete Vert. (Rx)
+          <span class="support-icon">◁</span>
+          <span><b>Rolete Vertical</b><span class="support-desc">Rx apenas — sup. horizontal</span></span>
         </button>
       </div>
-      <div class="sb-hint"><b>Clique em um nó</b> para aplicar o vínculo selecionado.</div>
+      <div class="sb-hint" style="font-size:11px">
+        Para treliça plana típica: use <b>Pino</b> + <b>Rolete Horizontal</b>.<br>
+        Rolete Vertical é para apoios em parede.
+      </div>
     </div>
     <div class="sb-section">
       <div class="sb-title">Vínculos (${S.supports.length})</div>
@@ -740,7 +749,7 @@ function updateSidebar() {
           S.supports.map((s, i) => `
           <div class="list-item">
             <span class="list-item-label">N${s.node+1}</span>
-            <span style="font-size:10px;color:var(--muted)">${s.type==='pin'?'Pino':s.type==='roller_h'?'Rol.H':'Rol.V'}</span>
+            <span class="list-item-info">${s.type==='pin'?'Pino':s.type==='roller_h'?'Rol. H.':'Rol. V.'}</span>
             <button class="list-item-del" onclick="removeSupport(${i})">✕</button>
           </div>`).join('')}
       </div>
@@ -748,23 +757,22 @@ function updateSidebar() {
   }
 
   else if (S.mode === 'force') {
-    html += `
+    h += `
     <div class="sb-section">
       <div class="sb-title">Aplicar Força</div>
-      <div class="sb-hint"><b>Selecione o nó</b> e informe as componentes:</div>
+      <div class="sb-hint">Selecione o nó e informe as componentes da força (kN, N, etc.):</div>
       <div style="height:8px"></div>
       <div class="form-group">
-        <label class="form-label">Nó</label>
+        <label class="form-label">Nó de aplicação</label>
         <select class="form-input" id="force-node">
-          <option value="">-- selecione --</option>
-          ${S.nodes.map((n,i) => `<option value="${i}">N${i+1} (${fmtCoord(n.x)},${fmtCoord(n.y)})</option>`).join('')}
+          <option value="">— selecione —</option>
+          ${S.nodes.map((n, i) => `<option value="${i}">N${i+1}  (${fmtCoord(n.x)}, ${fmtCoord(n.y)})</option>`).join('')}
         </select>
       </div>
       <div class="form-row">
-        <div class="form-group"><label class="form-label">Fx</label><input class="form-input" id="force-fx" type="number" step="1" placeholder="0"></div>
-        <div class="form-group"><label class="form-label">Fy</label><input class="form-input" id="force-fy" type="number" step="1" placeholder="0"></div>
+        <div class="form-group"><label class="form-label">Fx (→+)</label><input class="form-input" id="fi-fx" type="number" step="1" placeholder="0"></div>
+        <div class="form-group"><label class="form-label">Fy (↑+)</label><input class="form-input" id="fi-fy" type="number" step="1" placeholder="0"></div>
       </div>
-      <div style="font-size:10px;color:var(--muted);margin-bottom:6px">+ direita / + cima</div>
       <button class="btn-add" id="btn-add-force">+ ADICIONAR FORÇA</button>
     </div>
     <div class="sb-section">
@@ -774,156 +782,150 @@ function updateSidebar() {
           S.forces.map((f, i) => `
           <div class="list-item">
             <span class="list-item-label">N${f.node+1}</span>
-            <span style="font-size:10px;color:var(--muted)">Fx=${fmtVal(f.fx)} Fy=${fmtVal(f.fy)}</span>
+            <span class="list-item-info">Fx=${fmtVal(f.fx)} Fy=${fmtVal(f.fy)}</span>
             <button class="list-item-del" onclick="removeForce(${i})">✕</button>
           </div>`).join('')}
       </div>
     </div>`;
   }
 
-  el.innerHTML = html;
+  el.innerHTML = h;
   bindSidebarEvents();
   updateStatusBar();
 }
 
 function bindSidebarEvents() {
   document.getElementById('btn-add-node')?.addEventListener('click', () => {
-    const x = parseFloat(document.getElementById('node-x').value) || 0;
-    const y = parseFloat(document.getElementById('node-y').value) || 0;
+    const x = parseFloat(document.getElementById('ni-x').value) || 0;
+    const y = parseFloat(document.getElementById('ni-y').value) || 0;
     addNode(x, y);
   });
   document.getElementById('btn-add-force')?.addEventListener('click', () => {
-    const nodeIdx = parseInt(document.getElementById('force-node').value);
-    const fx = parseFloat(document.getElementById('force-fx').value) || 0;
-    const fy = parseFloat(document.getElementById('force-fy').value) || 0;
-    if (isNaN(nodeIdx)) { alert('Selecione um nó.'); return; }
+    const ni = document.getElementById('force-node').value;
+    if (ni === '') { alert('Selecione um nó.'); return; }
+    const fx = parseFloat(document.getElementById('fi-fx').value) || 0;
+    const fy = parseFloat(document.getElementById('fi-fy').value) || 0;
     if (fx === 0 && fy === 0) { alert('A força não pode ser zero.'); return; }
-    addForce(nodeIdx, fx, fy);
+    addForce(parseInt(ni), fx, fy);
   });
 }
 
 function updateStatusBar() {
   const n = S.nodes.length, m = S.members.length;
-  const sups = S.supports;
-  const r = sups.reduce((acc, s) => acc + (s.type === 'pin' ? 2 : 1), 0);
-  const totalUnk = m + r;
-  const totalEq  = 2 * n;
-  const diff = totalUnk - totalEq;
+  const r = S.supports.reduce((a, s) => a + (s.type === 'pin' ? 2 : 1), 0);
+  const eq = 2 * n, unk = m + r, diff = unk - eq;
 
-  document.getElementById('stat-nodes').textContent = `N: ${n}`;
+  document.getElementById('stat-nodes').textContent   = `N: ${n}`;
   document.getElementById('stat-members').textContent = `b: ${m}`;
-
   const pill = document.getElementById('stat-det');
   if (n === 0) { pill.textContent = '—'; pill.className = 'stat-pill neutral'; return; }
   if (diff === 0) { pill.textContent = 'Isostática ✓'; pill.className = 'stat-pill ok'; }
-  else if (diff > 0) { pill.textContent = `Hiperestática +${diff}`; pill.className = 'stat-pill warn'; }
+  else if (diff > 0) { pill.textContent = `Hiperestat. +${diff}`; pill.className = 'stat-pill warn'; }
   else { pill.textContent = `Instável ${diff}`; pill.className = 'stat-pill warn'; }
 }
 
 // ═══════════════════════════════════════════════════════════════════
 // RESULTS DISPLAY
 // ═══════════════════════════════════════════════════════════════════
-function renderDiagIssues(issues) {
+function diagHTML(issues) {
   if (!issues || issues.length === 0) return '';
-  return issues.map(d => `
-    <div style="margin-top:5px;padding:5px 8px;background:rgba(${d.level==='error'?'255,82,82':'255,215,64'},.08);
-      border:1px solid rgba(${d.level==='error'?'255,82,82':'255,215,64'},.35);
-      border-radius:3px;font-size:11px;color:${d.level==='error'?'var(--warn)':'#ffd740'}">
-      ${d.level==='error'?'⛔':'⚠'} ${d.msg}
-    </div>`).join('');
+  return issues.map(d => {
+    const cls = d.level === 'error' ? 'error' : 'warning';
+    const icon = d.level === 'error' ? '⛔' : '⚠';
+    return `<div class="diag-block ${cls}">${icon} ${d.msg}</div>`;
+  }).join('');
 }
 
 function showResults(res) {
   const panel = document.getElementById('results-panel');
   const body  = document.getElementById('results-body');
-  const stxt  = document.getElementById('results-status-text');
-
+  const stxt  = document.getElementById('results-status');
   panel.classList.add('visible');
 
   if (res.error) {
     stxt.textContent = '';
-    const diagHtml = renderDiagIssues(res.diagIssues);
-    body.innerHTML = `<div style="padding:12px;max-width:800px">
-      <div class="results-error">⛔ ${res.error}</div>
-      ${diagHtml}
-      <div style="margin-top:10px;padding:8px;background:rgba(0,207,255,.05);border:1px solid var(--border2);border-radius:4px;font-size:11px;color:var(--muted)">
-        <b style="color:var(--accent)">Como corrigir:</b><br>
-        • <b>Painel retangular</b> → adicione uma barra diagonal cortando o painel<br>
-        • <b>Nó solto</b> → conecte o nó a pelo menos 2 barras em direções diferentes<br>
-        • <b>Dois pinos</b> → substitua um pino por um <b>rolete horizontal</b> (libera Rx)<br>
-        • <b>Instável</b> → verifique se a contagem 2n = m + r está correta (n=nós, m=barras, r=reações)
-      </div>
-    </div>`;
+    body.innerHTML = `
+      <div class="results-error-wrapper">
+        <div class="diag-block error">⛔ ${res.error}</div>
+        ${diagHTML((res.diagIssues || []).filter(d => d.level !== 'error' || d.msg !== res.error))}
+        <div class="diag-block info">
+          <b>Guia rápido:</b><br>
+          • Treliça plana simples: <b>Pino</b> + <b>Rolete Horizontal</b> nos apoios de base<br>
+          • Painel sem diagonal → adicione uma barra diagonal cortando o retângulo<br>
+          • Verifique: <b>2n = m + r</b> &nbsp;(n=nós, m=barras, r=reações totais)
+        </div>
+      </div>`;
     return;
   }
 
   stxt.textContent = `${S.members.length} barras · ${S.supports.length} vínculos`;
 
   const eps = 1e-6;
-  let membersHtml = `
-    <table class="res-table">
-      <thead><tr><th>Barra</th><th>Nós</th><th>Força</th><th>Estado</th></tr></thead>
-      <tbody>`;
+
+  // Member table
+  let mHtml = `<table class="res-table">
+    <thead><tr><th>Barra</th><th>Nós</th><th>Força</th><th>Estado</th></tr></thead><tbody>`;
   res.memberForces.forEach((f, i) => {
-    const m = S.members[i];
+    const mm = S.members[i];
     const abs = Math.abs(f);
-    let type, badge;
-    if (abs < eps) { type = 'zero';   badge = '<span class="badge badge-Z">ZERO</span>'; }
-    else if (f > 0) { type = 'pos';   badge = '<span class="badge badge-T">TRAÇÃO</span>'; }
-    else              { type = 'neg'; badge = '<span class="badge badge-C">COMPRESSÃO</span>'; }
-    membersHtml += `<tr>
-      <td style="color:var(--accent)">b${i+1}</td>
-      <td style="color:var(--muted)">N${m.a+1}–N${m.b+1}</td>
-      <td class="res-val ${type}">${abs < eps ? '0' : (f > 0 ? '+' : '') + fmtForce(f)}</td>
+    let cls, badge;
+    if (abs < eps) { cls = 'zero'; badge = '<span class="badge badge-Z">ZERO</span>'; }
+    else if (f > 0){ cls = 'pos';  badge = '<span class="badge badge-T">TRAÇÃO</span>'; }
+    else            { cls = 'neg'; badge = '<span class="badge badge-C">COMPRESSÃO</span>'; }
+    mHtml += `<tr>
+      <td style="color:#00cfff">b${i+1}</td>
+      <td style="color:#4d7fa8">N${mm.a+1}–N${mm.b+1}</td>
+      <td class="res-val ${cls}">${abs < eps ? '0' : fmtForce(f)}</td>
       <td>${badge}</td>
     </tr>`;
   });
-  membersHtml += '</tbody></table>';
+  mHtml += '</tbody></table>';
 
-  // Zero-force members warning
-  const zeros = res.memberForces.map((f,i)=>Math.abs(f)<eps?i:-1).filter(i=>i>=0);
+  const zeros = res.memberForces.map((f,i) => Math.abs(f)<eps ? i : -1).filter(i=>i>=0);
   if (zeros.length > 0) {
-    membersHtml += `<div style="margin-top:6px;padding:5px 8px;background:rgba(96,125,139,.1);border:1px solid rgba(96,125,139,.3);border-radius:3px;font-size:11px;color:var(--zero)">
-      ⚪ Barra(s) com força zero: ${zeros.map(i=>'b'+(i+1)).join(', ')}
+    mHtml += `<div class="diag-block" style="background:rgba(120,144,156,.1);border:1px solid rgba(120,144,156,.3);color:#78909c;margin-top:6px">
+      ⚪ Força zero: ${zeros.map(i=>'b'+(i+1)).join(', ')}
     </div>`;
   }
 
-  let reactionsHtml = `
-    <table class="res-table">
-      <thead><tr><th>Vínculo</th><th>Nó</th><th>Rx</th><th>Ry</th></tr></thead>
-      <tbody>`;
-  S.supports.forEach((s, i) => {
+  // Reaction table
+  let rHtml = `<table class="res-table">
+    <thead><tr><th>Tipo</th><th>Nó</th><th>Rx</th><th>Ry</th></tr></thead><tbody>`;
+  S.supports.forEach(s => {
     const rf = res.reactionForces[s.node] || {x:0, y:0};
-    const typeLabel = s.type === 'pin' ? 'Pino' : s.type === 'roller_h' ? 'Rol.H' : 'Rol.V';
-    reactionsHtml += `<tr>
-      <td style="color:var(--support)">${typeLabel}</td>
-      <td style="color:var(--accent)">N${s.node+1}</td>
-      <td class="res-val ${Math.abs(rf.x)<eps?'zero':rf.x>0?'pos':'neg'}">${fmtVal(rf.x)}</td>
-      <td class="res-val ${Math.abs(rf.y)<eps?'zero':rf.y>0?'pos':'neg'}">${fmtVal(rf.y)}</td>
+    const tx = Math.abs(rf.x)<eps?'zero':rf.x>0?'pos':'neg';
+    const ty = Math.abs(rf.y)<eps?'zero':rf.y>0?'pos':'neg';
+    const lbl = s.type==='pin' ? 'Pino' : s.type==='roller_h' ? 'Rol.H' : 'Rol.V';
+    rHtml += `<tr>
+      <td style="color:#ff9800">${lbl}</td>
+      <td style="color:#00cfff">N${s.node+1}</td>
+      <td class="res-val ${tx}">${fmtVal(rf.x)}</td>
+      <td class="res-val ${ty}">${fmtVal(rf.y)}</td>
     </tr>`;
   });
-  reactionsHtml += '</tbody></table>';
+  rHtml += '</tbody></table>';
 
-  // Global equilibrium check
-  let sumFx = 0, sumFy = 0;
-  S.forces.forEach(f => { sumFx += f.fx; sumFy += f.fy; });
-  Object.values(res.reactionForces).forEach(r => { sumFx += r.x; sumFy += r.y; });
-  const equil = Math.abs(sumFx) < 1e-6 && Math.abs(sumFy) < 1e-6;
+  // Equilibrium check
+  let sFx = 0, sFy = 0;
+  S.forces.forEach(f => { sFx += f.fx; sFy += f.fy; });
+  Object.values(res.reactionForces).forEach(r => { sFx += r.x; sFy += r.y; });
+  const ok = Math.abs(sFx) < 1e-6 && Math.abs(sFy) < 1e-6;
+  const eqBlock = `<div class="diag-block ${ok?'ok':'error'}" style="margin-top:8px">
+    ${ok ? '✓ Equilíbrio global verificado' : `⚠ Equilíbrio não verificado (ΣFx=${fmtVal(sFx)}, ΣFy=${fmtVal(sFy)})`}
+  </div>`;
 
-  const warningsHtml = renderDiagIssues(res.diagIssues);
+  const warnings = (res.diagIssues || []).filter(d => d.level === 'warning');
 
   body.innerHTML = `
     <div class="results-col">
       <div class="results-section-title">Forças nas Barras</div>
-      ${membersHtml}
+      ${mHtml}
     </div>
     <div class="results-col">
       <div class="results-section-title">Reações nos Vínculos</div>
-      ${reactionsHtml}
-      <div style="margin-top:8px;padding:5px 8px;background:rgba(${equil?'0,230,118':'255,82,82'},.08);border:1px solid rgba(${equil?'0,230,118':'255,82,82'},.3);border-radius:3px;font-size:11px;color:${equil?'var(--tension)':'var(--compress)'}">
-        ${equil ? '✓ Equilíbrio global verificado' : '⚠ Equilíbrio não verificado (checar dados)'}
-      </div>
-      ${warningsHtml}
+      ${rHtml}
+      ${eqBlock}
+      ${diagHTML(warnings)}
     </div>`;
 }
 
@@ -931,81 +933,50 @@ function showResults(res) {
 // DATA MANIPULATION
 // ═══════════════════════════════════════════════════════════════════
 function addNode(x, y) {
-  // Check duplicate
-  const dup = S.nodes.find(n => Math.abs(n.x - x) < 0.01 && Math.abs(n.y - y) < 0.01);
-  if (dup) { return; }
+  if (S.nodes.find(n => Math.abs(n.x-x)<0.01 && Math.abs(n.y-y)<0.01)) return;
   S.nodes.push({id: nextId(), x, y});
-  S.results = null;
-  checkCrossings();
-  updateSidebar();
-  render();
+  invalidate();
 }
 function removeNode(idx) {
   S.nodes.splice(idx, 1);
-  // Remove members referencing this node, update indices
-  S.members = S.members.filter(m => m.a !== idx && m.b !== idx).map(m => ({
-    ...m,
-    a: m.a > idx ? m.a - 1 : m.a,
-    b: m.b > idx ? m.b - 1 : m.b,
-  }));
-  S.supports = S.supports.filter(s => s.node !== idx).map(s => ({...s, node: s.node > idx ? s.node - 1 : s.node}));
-  S.forces = S.forces.filter(f => f.node !== idx).map(f => ({...f, node: f.node > idx ? f.node - 1 : f.node}));
+  S.members = S.members.filter(m => m.a!==idx && m.b!==idx)
+    .map(m => ({...m, a: m.a>idx?m.a-1:m.a, b: m.b>idx?m.b-1:m.b}));
+  S.supports = S.supports.filter(s => s.node!==idx)
+    .map(s => ({...s, node: s.node>idx?s.node-1:s.node}));
+  S.forces = S.forces.filter(f => f.node!==idx)
+    .map(f => ({...f, node: f.node>idx?f.node-1:f.node}));
   if (S.pendingMember === idx) S.pendingMember = null;
   else if (S.pendingMember > idx) S.pendingMember--;
-  S.results = null;
-  checkCrossings();
-  updateSidebar();
-  render();
+  invalidate();
 }
 function addMember(a, b) {
   if (a === b) return;
   if (S.members.find(m => (m.a===a&&m.b===b)||(m.a===b&&m.b===a))) return;
   const na = S.nodes[a], nb = S.nodes[b];
-  if (!na || !nb) return;
-  if (Math.hypot(nb.x-na.x, nb.y-na.y) < 1e-12) return;
+  if (!na || !nb || Math.hypot(nb.x-na.x, nb.y-na.y) < 1e-12) return;
   S.members.push({id: nextId(), a, b});
-  S.results = null;
-  checkCrossings();
-  updateSidebar();
-  render();
+  invalidate();
 }
-function removeMember(idx) {
-  S.members.splice(idx, 1);
-  S.results = null;
-  checkCrossings();
-  updateSidebar();
-  render();
-}
+function removeMember(idx) { S.members.splice(idx, 1); invalidate(); }
 function addSupport(nodeIdx, type) {
   const dup = S.supports.find(s => s.node === nodeIdx);
-  if (dup) { dup.type = type; }
-  else S.supports.push({id: nextId(), node: nodeIdx, type});
-  S.results = null;
-  updateSidebar();
-  render();
+  if (dup) dup.type = type; else S.supports.push({id: nextId(), node: nodeIdx, type});
+  invalidate();
 }
-function removeSupport(idx) {
-  S.supports.splice(idx, 1);
-  S.results = null;
-  updateSidebar();
-  render();
-}
-function addForce(nodeIdx, fx, fy) {
-  S.forces.push({id: nextId(), node: nodeIdx, fx, fy});
-  S.results = null;
-  updateSidebar();
-  render();
-}
-function removeForce(idx) {
-  S.forces.splice(idx, 1);
-  S.results = null;
-  updateSidebar();
-  render();
-}
+function removeSupport(idx) { S.supports.splice(idx, 1); invalidate(); }
+function addForce(nodeIdx, fx, fy) { S.forces.push({id: nextId(), node: nodeIdx, fx, fy}); invalidate(); }
+function removeForce(idx) { S.forces.splice(idx, 1); invalidate(); }
 function setSupportType(t) { S.supportType = t; updateSidebar(); }
 
+function invalidate() {
+  S.results = null;
+  checkCrossings();
+  updateSidebar();
+  render();
+}
+
 function clearAll() {
-  if (!confirm('Limpar tudo?')) return;
+  if (!confirm('Limpar toda a estrutura?')) return;
   Object.assign(S, {nodes:[], members:[], supports:[], forces:[],
     pendingMember: null, results: null, crossings: []});
   document.getElementById('results-panel').classList.remove('visible');
@@ -1017,11 +988,12 @@ function clearAll() {
 // ═══════════════════════════════════════════════════════════════════
 // CANVAS INTERACTION
 // ═══════════════════════════════════════════════════════════════════
-function getNodeNear(wx, wy, tol = 0.4) {
-  let best = -1, bestDist = tol;
+function getNodeNear(wx, wy, tol) {
+  tol = tol || 0.5;
+  let best = -1, bestD = tol;
   S.nodes.forEach((n, i) => {
-    const d = Math.hypot(n.x - wx, n.y - wy);
-    if (d < bestDist) { bestDist = d; best = i; }
+    const d = Math.hypot(n.x-wx, n.y-wy);
+    if (d < bestD) { bestD = d; best = i; }
   });
   return best;
 }
@@ -1031,11 +1003,9 @@ canvas.addEventListener('mousedown', e => {
     S.panning = true;
     S.panSX = e.clientX; S.panSY = e.clientY;
     S.panOX = S.originX; S.panOY = S.originY;
-    canvas.style.cursor = 'grabbing';
-    return;
+    canvas.style.cursor = 'grabbing'; return;
   }
   if (e.button !== 0) return;
-
   const rect = canvas.getBoundingClientRect();
   const [wx, wy] = canvasToWorld(e.clientX - rect.left, e.clientY - rect.top);
   const [sx, sy] = snapToGrid(wx, wy);
@@ -1047,14 +1017,10 @@ canvas.addEventListener('mousedown', e => {
     const ni = getNodeNear(wx, wy);
     if (ni < 0) return;
     if (S.pendingMember === null) {
-      S.pendingMember = ni;
-      updateSidebar();
-      render();
+      S.pendingMember = ni; updateSidebar(); render();
     } else {
       addMember(S.pendingMember, ni);
       S.pendingMember = null;
-      updateSidebar();
-      render();
     }
   }
   else if (S.mode === 'support') {
@@ -1063,8 +1029,10 @@ canvas.addEventListener('mousedown', e => {
   }
   else if (S.mode === 'force') {
     const ni = getNodeNear(wx, wy);
-    if (ni < 0) return;
-    document.getElementById('force-node').value = ni;
+    if (ni >= 0) {
+      const sel = document.getElementById('force-node');
+      if (sel) sel.value = ni;
+    }
   }
 });
 
@@ -1075,26 +1043,21 @@ canvas.addEventListener('mousemove', e => {
   if (S.panning) {
     const dx = (e.clientX - S.panSX) / S.scale;
     const dy = (e.clientY - S.panSY) / S.scale;
-    S.originX = S.panOX - dx;
-    S.originY = S.panOY + dy;
-    render();
-    return;
+    S.originX = S.panOX - dx; S.originY = S.panOY + dy;
+    render(); return;
   }
 
   const [wx, wy] = canvasToWorld(cx, cy);
   const [sx, sy] = snapToGrid(wx, wy);
-  document.getElementById('coord-display').textContent =
-    `x: ${sx.toFixed(2)} | y: ${sy.toFixed(2)}`;
+  const coord = document.getElementById('coord-display');
+  if (coord) coord.textContent = `x: ${sx.toFixed(0)} | y: ${sy.toFixed(0)}`;
 
   S._mouseCanvas = [cx, cy];
   if (S.pendingMember !== null) render();
 });
 
-canvas.addEventListener('mouseup', e => {
-  if (S.panning) {
-    S.panning = false;
-    canvas.style.cursor = 'crosshair';
-  }
+canvas.addEventListener('mouseup', () => {
+  if (S.panning) { S.panning = false; canvas.style.cursor = 'crosshair'; }
 });
 
 canvas.addEventListener('wheel', e => {
@@ -1102,21 +1065,16 @@ canvas.addEventListener('wheel', e => {
   const rect = canvas.getBoundingClientRect();
   const mx = e.clientX - rect.left, my = e.clientY - rect.top;
   const [wx0, wy0] = canvasToWorld(mx, my);
-  const factor = e.deltaY < 0 ? 1.12 : 0.89;
-  S.scale = Math.min(Math.max(S.scale * factor, 15), 400);
-  // Keep mouse world coord fixed
+  S.scale = Math.min(Math.max(S.scale * (e.deltaY < 0 ? 1.12 : 0.89), 12), 500);
   const [cx, cy] = worldToCanvas(wx0, wy0);
   S.originX += (cx - mx) / S.scale;
   S.originY -= (cy - my) / S.scale;
   render();
 }, {passive: false});
 
-// Keyboard: Escape cancels pending
 document.addEventListener('keydown', e => {
   if (e.key === 'Escape' && S.pendingMember !== null) {
-    S.pendingMember = null;
-    updateSidebar();
-    render();
+    S.pendingMember = null; updateSidebar(); render();
   }
 });
 
@@ -1125,20 +1083,17 @@ document.addEventListener('keydown', e => {
 // ═══════════════════════════════════════════════════════════════════
 document.querySelectorAll('.mode-tab').forEach(btn => {
   btn.addEventListener('click', () => {
-    const mode = btn.dataset.mode;
-    S.mode = mode;
+    S.mode = btn.dataset.mode;
     S.pendingMember = null;
     document.querySelectorAll('.mode-tab').forEach(b => b.classList.remove('active'));
     btn.classList.add('active');
-    updateSidebar();
-    render();
+    updateSidebar(); render();
   });
 });
 
 document.getElementById('btn-analyze').addEventListener('click', () => {
   if (S.crossings.length > 0) {
-    alert('Existem barras se cruzando. Corrija antes de analisar.');
-    return;
+    alert('Existem barras se cruzando. Corrija antes de analisar.'); return;
   }
   S.results = solveTruss();
   showResults(S.results);
@@ -1149,20 +1104,13 @@ document.getElementById('btn-clear').addEventListener('click', clearAll);
 
 document.getElementById('results-close').addEventListener('click', () => {
   document.getElementById('results-panel').classList.remove('visible');
+  render();
 });
 
-document.getElementById('btn-zoom-in').addEventListener('click', () => {
-  S.scale = Math.min(S.scale * 1.25, 400); render();
-});
-document.getElementById('btn-zoom-out').addEventListener('click', () => {
-  S.scale = Math.max(S.scale * 0.8, 15); render();
-});
-document.getElementById('btn-reset-view').addEventListener('click', () => {
-  S.originX = 0; S.originY = 0; S.scale = 70; render();
-});
-document.getElementById('snap-grid').addEventListener('change', e => {
-  S.snapGrid = e.target.checked;
-});
+document.getElementById('btn-zoom-in' ).addEventListener('click', () => { S.scale = Math.min(S.scale*1.25,500); render(); });
+document.getElementById('btn-zoom-out').addEventListener('click', () => { S.scale = Math.max(S.scale*0.8, 12); render(); });
+document.getElementById('btn-reset-view').addEventListener('click', () => { S.originX=0; S.originY=0; S.scale=70; render(); });
+document.getElementById('snap-grid').addEventListener('change', e => { S.snapGrid = e.target.checked; });
 
 // ═══════════════════════════════════════════════════════════════════
 // INIT
@@ -1170,17 +1118,3 @@ document.getElementById('snap-grid').addEventListener('change', e => {
 window.addEventListener('resize', resizeCanvas);
 resizeCanvas();
 updateSidebar();
-
-// Demo: simple triangle truss
-function loadDemo() {
-  addNode(0, 0);
-  addNode(4, 0);
-  addNode(2, 2);
-  addMember(0, 1);
-  addMember(0, 2);
-  addMember(1, 2);
-  addSupport(0, 'pin');
-  addSupport(1, 'roller_h');
-  addForce(2, 0, -10);
-}
-// loadDemo(); // Uncomment to auto-load demo on open

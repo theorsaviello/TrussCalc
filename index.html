@@ -1,16 +1,16 @@
 <!DOCTYPE html>
 <html lang="pt-BR">
 <head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>TrussCalc — Analisador de Treliças</title>
-<link href="https://fonts.googleapis.com/css2?family=Rajdhani:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;700&family=Orbitron:wght@700;900&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="style.css">
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>TrussCalc — Analisador de Treliças</title>
+  <link href="https://fonts.googleapis.com/css2?family=Rajdhani:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;700&family=Orbitron:wght@700;900&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="style.css">
 </head>
 <body>
 <div id="app">
 
-  <!-- HEADER -->
+  <!-- ── HEADER ── -->
   <header class="header">
     <div class="logo">
       <span class="logo-hex">⬡</span>
@@ -19,66 +19,90 @@
 
     <div class="mode-tabs">
       <button class="mode-tab active" data-mode="node"><span class="tab-num">①</span> Nós</button>
-      <button class="mode-tab" data-mode="member"><span class="tab-num">②</span> Barras</button>
-      <button class="mode-tab" data-mode="support"><span class="tab-num">③</span> Vínculos</button>
-      <button class="mode-tab" data-mode="force"><span class="tab-num">④</span> Forças</button>
+      <button class="mode-tab"        data-mode="member"><span class="tab-num">②</span> Barras</button>
+      <button class="mode-tab"        data-mode="support"><span class="tab-num">③</span> Vínculos</button>
+      <button class="mode-tab"        data-mode="force"><span class="tab-num">④</span> Forças</button>
     </div>
 
     <div class="header-actions">
       <button class="btn-analyze" id="btn-analyze">▶ ANALISAR</button>
-      <button class="btn-clear" id="btn-clear">⟳ LIMPAR</button>
+      <button class="btn-clear"   id="btn-clear">⟳ LIMPAR</button>
     </div>
   </header>
 
-  <!-- WORKSPACE -->
+  <!-- ── WORKSPACE ── -->
   <div class="workspace">
 
     <!-- SIDEBAR -->
     <aside class="sidebar">
-      <div class="status-bar" id="status-bar">
-        <span class="stat-pill neutral" id="stat-nodes">Nós: 0</span>
-        <span class="stat-pill neutral" id="stat-members">Barras: 0</span>
+      <div class="status-bar">
+        <span class="stat-pill neutral" id="stat-nodes">N: 0</span>
+        <span class="stat-pill neutral" id="stat-members">b: 0</span>
         <span class="stat-pill neutral" id="stat-det">—</span>
       </div>
-
       <div id="sidebar-content"></div>
-
     </aside>
 
-    <!-- CANVAS -->
+    <!-- CANVAS AREA -->
     <div class="canvas-wrapper" id="canvas-wrapper">
       <canvas id="canvas"></canvas>
 
-      <div class="crossing-warning" id="crossing-warning">
-        ⚠ Cruzamento detectado entre barras!
-      </div>
+      <!-- Crossing warning -->
+      <div class="crossing-warning" id="crossing-warning"></div>
 
+      <!-- Zoom controls -->
       <div class="canvas-controls">
-        <button id="btn-zoom-in" title="Zoom +">+</button>
-        <button id="btn-zoom-out" title="Zoom −">−</button>
+        <button id="btn-zoom-in"    title="Zoom +">+</button>
+        <button id="btn-zoom-out"   title="Zoom −">−</button>
         <button id="btn-reset-view" title="Resetar vista">⊡</button>
-        <label class="snap-label" title="Snap ao grid">
-          <input type="checkbox" id="snap-grid" checked> Snap
+        <label  class="snap-label"  title="Snap ao grid">
+          <input type="checkbox" id="snap-grid" checked> Grid
         </label>
       </div>
 
-      <div class="coord-display" id="coord-display">x: 0.0 | y: 0.0</div>
-    </div>
-  </div>
+      <!-- Coordinate display -->
+      <div class="coord-display" id="coord-display">x: 0 | y: 0</div>
 
-  <!-- RESULTS -->
+      <!-- Legend (shown after analysis) -->
+      <div class="canvas-legend" id="canvas-legend" style="display:none">
+        <div class="legend-item"><div class="legend-dot" style="background:#00e676"></div> Tração</div>
+        <div class="legend-item"><div class="legend-dot" style="background:#ff4545"></div> Compressão</div>
+        <div class="legend-item"><div class="legend-dot" style="background:#78909c"></div> Força zero</div>
+        <div class="legend-item"><div class="legend-dot" style="background:#ffd740"></div> Força ext.</div>
+        <div class="legend-item"><div class="legend-dot" style="background:#ff9800"></div> Reação</div>
+      </div>
+    </div>
+
+  </div><!-- /.workspace -->
+
+  <!-- ── RESULTS PANEL ── -->
   <div class="results-panel" id="results-panel">
     <div class="results-header">
       <span class="results-title">RESULTADOS</span>
-      <span id="results-status-text" style="font-size:12px;color:var(--muted);"></span>
+      <span class="results-status" id="results-status"></span>
       <button class="results-close" id="results-close">✕</button>
     </div>
     <div class="results-body" id="results-body"></div>
   </div>
 
-</div>
+</div><!-- /#app -->
 
-<script src="script.js"></script>
-
+<script>
+  // Show legend after analysis
+  const _origAnalyze = () => {};
+</script>
+<script src="app.js"></script>
+<script>
+  // Show legend when results are displayed
+  const _rp = document.getElementById('results-panel');
+  const _leg = document.getElementById('canvas-legend');
+  const _observer = new MutationObserver(() => {
+    _leg.style.display = _rp.classList.contains('visible') ? 'flex' : 'none';
+  });
+  _observer.observe(_rp, {attributes: true, attributeFilter: ['class']});
+  document.getElementById('results-close').addEventListener('click', () => {
+    _leg.style.display = 'none';
+  }, true);
+</script>
 </body>
 </html>
